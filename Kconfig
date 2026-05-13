@@ -1,0 +1,15 @@
+config ZMK_RUNTIME_COMBOS
+    bool "Enable runtime combo configuration"
+
+if ZMK_RUNTIME_COMBOS
+
+config ZMK_RUNTIME_COMBOS_MAX_COUNT
+    int "Maximum number of runtime combos"
+    default 16
+
+config ZMK_RUNTIME_COMBOS_STUDIO_RPC
+    bool "Enable runtime combos custom Studio RPC"
+    default y
+    depends on ZMK_STUDIO
+
+endif

@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package cormoran.combos;
+
+message Binding {
+    uint32 behavior_id = 1;
+    uint32 param1 = 2;
+    uint32 param2 = 3;
+}
+
+message ComboConfig {
+    uint32 combo_id = 1;
+    repeated uint32 key_positions = 2;
+    uint32 timeout_ms = 3;
+    Binding binding = 4;
+    uint32 layer_mask = 5;
+    bool slow_release = 6;
+}
+
+message SetComboRequest {
+    ComboConfig combo = 1;
+}
+
+message SetComboResponse {
+    bool success = 1;
+}
+
+message DeleteComboRequest {
+    uint32 combo_id = 1;
+}
+
+message DeleteComboResponse {
+    bool success = 1;
+}
+
+message GetAllCombosRequest {}
+
+message GetAllCombosResponse {
+    repeated ComboConfig combos = 1;
+}
+
+message Request {
+    oneof request_type {
+        SetComboRequest set_combo = 1;
+        DeleteComboRequest delete_combo = 2;
+        GetAllCombosRequest get_all_combos = 3;
+    }
+}
+
+message ErrorResponse {
+    string message = 1;
+}
+
+message Response {
+    oneof response_type {
+        ErrorResponse error = 1;
+        SetComboResponse set_combo = 2;
+        DeleteComboResponse delete_combo = 3;
+        GetAllCombosResponse get_all_combos = 4;
+    }
+}
