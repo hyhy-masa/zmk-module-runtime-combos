@@ -1,0 +1,5 @@
+# Nanopb options for custom.proto
+
+cormoran.combos.ErrorResponse.message       max_size:64
+cormoran.combos.ComboConfig.key_positions   max_count:4
+cormoran.combos.GetAllCombosResponse.combos max_count:16
