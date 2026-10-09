@@ -15,6 +15,7 @@ message ComboConfig {
     Binding binding = 4;
     uint32 layer_mask = 5;
     bool slow_release = 6;
+    uint32 require_prior_idle_ms = 7;
 }
 
 message SetComboRequest {

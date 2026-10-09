@@ -3,6 +3,10 @@ zephyr_include_directories(include)
 if(CONFIG_ZMK_RUNTIME_COMBOS)
     target_sources(app PRIVATE src/runtime_combos.c)
 
+    if(CONFIG_ZMK_RUNTIME_COMBOS_ENGINE)
+        target_sources(app PRIVATE src/runtime_combos_engine.c)
+    endif()
+
     if(CONFIG_ZMK_RUNTIME_COMBOS_STUDIO_RPC)
         file(GLOB_RECURSE C_FILES ${CMAKE_CURRENT_SOURCE_DIR}/src/studio/*.c)
         target_sources(app PRIVATE ${C_FILES})

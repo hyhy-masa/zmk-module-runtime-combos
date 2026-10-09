@@ -14,6 +14,9 @@ struct runtime_combo_config {
     uint32_t param1;
     uint32_t param2;
     uint32_t layer_mask;
+    /* Suppress the combo when a key was tapped less than this long ago, so
+     * ordinary typing does not trigger it. 0 means "use the Kconfig default". */
+    uint16_t require_prior_idle_ms;
     bool slow_release;
     bool active;
 };

@@ -86,6 +86,9 @@ static int handle_set_combo(const cormoran_combos_SetComboRequest *req,
 		.param1 = cfg->has_binding ? cfg->binding.param1 : 0,
 		.param2 = cfg->has_binding ? cfg->binding.param2 : 0,
 		.layer_mask = cfg->layer_mask,
+		.require_prior_idle_ms = cfg->require_prior_idle_ms > UINT16_MAX
+						 ? UINT16_MAX
+						 : (uint16_t)cfg->require_prior_idle_ms,
 		.slow_release = cfg->slow_release,
 		.active = true,
 	};
@@ -144,6 +147,7 @@ static int handle_get_all_combos(const cormoran_combos_GetAllCombosRequest *req,
 		result.combos[i].binding.param2 = all[i].param2;
 		result.combos[i].layer_mask = all[i].layer_mask;
 		result.combos[i].slow_release = all[i].slow_release;
+		result.combos[i].require_prior_idle_ms = all[i].require_prior_idle_ms;
 	}
 
 	resp->which_response_type = cormoran_combos_Response_get_all_combos_tag;

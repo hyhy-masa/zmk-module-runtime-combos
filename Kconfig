@@ -5,11 +5,42 @@ if ZMK_RUNTIME_COMBOS
 
 config ZMK_RUNTIME_COMBOS_MAX_COUNT
     int "Maximum number of runtime combos"
+    # Upper bound is set by proto/cormoran/combos/custom.options
+    # (GetAllCombosResponse.combos max_count). Raising it past that overflows
+    # the response buffer in src/studio/custom_handler.c.
+    range 1 16
     default 16
 
 config ZMK_RUNTIME_COMBOS_STUDIO_RPC
     bool "Enable runtime combos custom Studio RPC"
     default y
     depends on ZMK_STUDIO
+
+config ZMK_RUNTIME_COMBOS_ENGINE
+    bool "Activate runtime combos on key presses"
+    default y
+    # zmk_behavior_find_behavior_name_from_local_id() only exists when this is on.
+    select ZMK_BEHAVIOR_LOCAL_IDS
+    help
+      Watch key positions and fire the configured behavior. Turn this off to
+      keep the settings/RPC side only, which is how the module behaved before
+      the engine existed.
+
+config ZMK_RUNTIME_COMBOS_MAX_PRESSED
+    int "Maximum runtime combos held at the same time"
+    range 1 8
+    default 4
+    depends on ZMK_RUNTIME_COMBOS_ENGINE
+
+config ZMK_RUNTIME_COMBOS_DEFAULT_PRIOR_IDLE_MS
+    int "Idle time before a combo may fire, when the app sent no value"
+    range 0 1000
+    default 100
+    depends on ZMK_RUNTIME_COMBOS_ENGINE
+    help
+      A combo whose keys sit under normal typing would fire on a fast roll.
+      This is the window after any key tap in which combos stay disabled.
+      Applies only to combos stored with require_prior_idle_ms == 0, which is
+      what an app that does not know the field yet sends.
 
 endif
