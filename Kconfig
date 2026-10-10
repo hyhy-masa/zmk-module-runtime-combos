@@ -22,9 +22,22 @@ config ZMK_RUNTIME_COMBOS_ENGINE
     # zmk_behavior_find_behavior_name_from_local_id() only exists when this is on.
     select ZMK_BEHAVIOR_LOCAL_IDS
     help
-      Watch key positions and fire the configured behavior. Turn this off to
-      keep the settings/RPC side only, which is how the module behaved before
-      the engine existed.
+      Watch key positions and fire the configured behavior.
+      Disabling it removes key-event handling, the two options below, and
+      the select of ZMK_BEHAVIOR_LOCAL_IDS. These stay: slot validation (key
+      positions must be below ZMK_KEYMAP_LEN; the behavior id must exist when
+      ZMK_BEHAVIOR_LOCAL_IDS is enabled by something else), the MAX_COUNT
+      range of 1-16, the 10-500 ms clamp of timeout_ms and
+      require_prior_idle_ms in the Studio handler (0 keeps its old meaning),
+      the scheduler lock around slot updates, rolling a slot back when saving
+      it to flash fails, the settings commit hook (its callee becomes an empty
+      function), the exported slot table zmk_runtime_combos_slots, the
+      per-combo require_prior_idle_ms field (struct, proto field 7, Studio
+      handler), and the new settings key with its build-time check that every
+      slot name fits the name buffer (combos saved by the pre-engine module
+      are not loaded). Studio still receives engine_version 1, with
+      engine_enabled set to false. To restore the pre-engine module, pin the
+      module back to 119de78.
 
 config ZMK_RUNTIME_COMBOS_MAX_PRESSED
     int "Maximum runtime combos held at the same time"

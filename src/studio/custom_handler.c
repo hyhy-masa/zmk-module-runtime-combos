@@ -11,6 +11,7 @@
 #include <zmk/behavior.h>
 
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/util.h>
 #include <string.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
@@ -72,6 +73,15 @@ static bool combos_rpc_handle_request(const zmk_custom_CallRequest *raw_request,
 	return true;
 }
 
+/*
+ * 0 keeps its old meaning for apps that do not send the field: timeout_ms 0
+ * becomes 50, require_prior_idle_ms 0 is stored as 0 (the engine then uses
+ * CONFIG_ZMK_RUNTIME_COMBOS_DEFAULT_PRIOR_IDLE_MS). Anything else is clamped.
+ */
+static uint32_t clamp_ms(uint32_t ms) {
+	return CLAMP(ms, ZMK_RUNTIME_COMBOS_MIN_MS, ZMK_RUNTIME_COMBOS_MAX_MS);
+}
+
 static int handle_set_combo(const cormoran_combos_SetComboRequest *req,
 			    cormoran_combos_Response *resp) {
 	const cormoran_combos_ComboConfig *cfg = &req->combo;
@@ -81,14 +91,14 @@ static int handle_set_combo(const cormoran_combos_SetComboRequest *req,
 	struct runtime_combo_config combo = {
 		.combo_id = cfg->combo_id,
 		.key_count = cfg->key_positions_count,
-		.timeout_ms = cfg->timeout_ms > 0 ? cfg->timeout_ms : 50,
+		.timeout_ms = cfg->timeout_ms > 0 ? clamp_ms(cfg->timeout_ms) : 50,
 		.behavior_local_id = cfg->has_binding ? cfg->binding.behavior_id : 0,
 		.param1 = cfg->has_binding ? cfg->binding.param1 : 0,
 		.param2 = cfg->has_binding ? cfg->binding.param2 : 0,
 		.layer_mask = cfg->layer_mask,
-		.require_prior_idle_ms = cfg->require_prior_idle_ms > UINT16_MAX
-						 ? UINT16_MAX
-						 : (uint16_t)cfg->require_prior_idle_ms,
+		.require_prior_idle_ms = cfg->require_prior_idle_ms > 0
+						 ? (uint16_t)clamp_ms(cfg->require_prior_idle_ms)
+						 : 0,
 		.slow_release = cfg->slow_release,
 		.active = true,
 	};
@@ -133,6 +143,8 @@ static int handle_get_all_combos(const cormoran_combos_GetAllCombosRequest *req,
 	cormoran_combos_GetAllCombosResponse result =
 		cormoran_combos_GetAllCombosResponse_init_zero;
 	result.combos_count = count;
+	result.engine_version = ZMK_RUNTIME_COMBOS_ENGINE_VERSION;
+	result.engine_enabled = IS_ENABLED(CONFIG_ZMK_RUNTIME_COMBOS_ENGINE);
 
 	for (uint8_t i = 0; i < count; i++) {
 		result.combos[i].combo_id = all[i].combo_id;

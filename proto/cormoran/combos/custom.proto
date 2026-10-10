@@ -38,6 +38,11 @@ message GetAllCombosRequest {}
 
 message GetAllCombosResponse {
     repeated ComboConfig combos = 1;
+    // Version of the combo engine in this firmware. 0 (field absent) means
+    // firmware from before the engine existed.
+    uint32 engine_version = 2;
+    // True when CONFIG_ZMK_RUNTIME_COMBOS_ENGINE is enabled.
+    bool engine_enabled = 3;
 }
 
 message Request {

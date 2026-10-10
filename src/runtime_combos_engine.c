@@ -10,8 +10,8 @@
  * from -- a RAM slot table written over the Studio RPC instead of a const
  * array generated from the devicetree.
  *
- * With no active combo the listener returns BUBBLE on its first line, so a
- * keyboard that has never been given a combo behaves exactly as before.
+ * With no combo configured, the listener still forwards keycode events to
+ * store_last_tapped and applies a pending refresh, then returns BUBBLE.
  */
 
 #include <zephyr/init.h>
@@ -85,6 +85,8 @@ static uint8_t active_combo_count;
 
 static struct k_work_delayable timeout_task;
 static int64_t timeout_task_timeout_at;
+/* True while combo_timeout_handler runs. See stop_timeout_task(). */
+static bool in_timeout_handler;
 
 /* when a non-modifier key was last tapped, and when a combo last fired */
 static int64_t last_tapped_timestamp = INT32_MIN;
@@ -117,6 +119,11 @@ static bool slot_is_usable(const struct runtime_combo_config *cfg) {
 	}
 	/* The RPC writes 0 when the request carried no binding at all. */
 	if (cfg->behavior_local_id == 0) {
+		return false;
+	}
+	/* A stored id this firmware does not know would capture and delay the
+	 * keys on every press and then fire nothing; let them pass through. */
+	if (zmk_behavior_find_behavior_name_from_local_id(cfg->behavior_local_id) == NULL) {
 		return false;
 	}
 	for (uint8_t i = 0; i < cfg->key_count; i++) {
@@ -249,17 +256,38 @@ static int64_t first_candidate_timeout(void) {
 	return pressed_keys[0].data.timestamp + first_timeout;
 }
 
+/*
+ * Cancelling the work item from inside its own handler flags it CANCELING
+ * until the handler returns, and Zephyr then refuses an immediate resubmit
+ * (-EBUSY). A press re-raised by the handler whose deadline has already
+ * passed needs exactly that resubmit, so it would sit captured until the next
+ * key. Inside the handler, clearing the deadline is enough: any firing still
+ * queued returns early on timeout_task_timeout_at == 0 (or before the
+ * deadline), so keep that early return if the handler changes.
+ * Assumes the listener and this handler run on the same thread (the system
+ * work queue); the Studio RPC thread only raises refresh_pending.
+ */
+static void stop_timeout_task(void) {
+	timeout_task_timeout_at = 0;
+	if (!in_timeout_handler) {
+		k_work_cancel_delayable(&timeout_task);
+	}
+}
+
 static void update_timeout_task(void) {
 	int64_t first_timeout = first_candidate_timeout();
 	if (timeout_task_timeout_at == first_timeout) {
 		return;
 	}
 	if (first_timeout == INT64_MAX) {
-		timeout_task_timeout_at = 0;
-		k_work_cancel_delayable(&timeout_task);
+		stop_timeout_task();
 		return;
 	}
-	if (k_work_schedule(&timeout_task, K_MSEC(first_timeout - k_uptime_get())) >= 0) {
+	/* Per-combo timeouts differ, so the next deadline can move either way.
+	 * k_work_schedule() leaves a pending item untouched, and the handler then
+	 * fires at the old time and returns early; reschedule replaces it. */
+	int64_t delay_ms = MAX(first_timeout - k_uptime_get(), 0);
+	if (k_work_reschedule(&timeout_task, K_MSEC(delay_ms)) >= 0) {
 		timeout_task_timeout_at = first_timeout;
 	}
 }
@@ -355,19 +383,19 @@ static void move_pressed_keys_to_active_combo(struct active_combo *active, uint8
 	pressed_keys_count -= combo_length;
 }
 
-static void activate_combo(int slot) {
+/* Returns how many captured presses were re-raised because the combo could
+ * not fire, so the caller can order the triggering release after them. */
+static int activate_combo(int slot) {
 	const struct runtime_combo_config *cfg = slot_cfg(slot);
 
 	struct zmk_behavior_binding binding;
 	if (!slot_is_usable(cfg) || !resolve_binding(cfg, &binding)) {
-		release_pressed_keys();
-		return;
+		return release_pressed_keys();
 	}
 
 	struct active_combo *active = store_active_combo(slot);
 	if (active == NULL) {
-		release_pressed_keys();
-		return;
+		return release_pressed_keys();
 	}
 
 	active->binding = binding;
@@ -377,10 +405,11 @@ static void activate_combo(int slot) {
 		/* No path reaches this today, but firing a behavior we could never
 		 * release would leave it held forever, so refuse rather than trust. */
 		deactivate_combo(active_combo_count - 1);
-		return;
+		return 0;
 	}
 	move_pressed_keys_to_active_combo(active, combo_length);
 	press_combo_behavior(active, active->key_positions_pressed[0].data.timestamp);
+	return 0;
 }
 
 static void deactivate_combo(int active_combo_index) {
@@ -431,15 +460,15 @@ static bool release_combo_key(uint32_t position, int64_t timestamp) {
 }
 
 static int cleanup(void) {
-	k_work_cancel_delayable(&timeout_task);
-	timeout_task_timeout_at = 0;
+	stop_timeout_task();
 	candidates = 0;
+	int released = 0;
 	if (fully_pressed_combo >= 0) {
 		int slot = fully_pressed_combo;
 		fully_pressed_combo = -1;
-		activate_combo(slot);
+		released = activate_combo(slot);
 	}
-	return release_pressed_keys();
+	return released + release_pressed_keys();
 }
 
 /* ------------------------------------------------------------------ */
@@ -512,10 +541,12 @@ static void combo_timeout_handler(struct k_work *item) {
 		/* cancelled or rescheduled */
 		return;
 	}
+	in_timeout_handler = true;
 	if (filter_timed_out_candidates(timeout_task_timeout_at) == 0) {
 		cleanup();
 	}
 	update_timeout_task();
+	in_timeout_handler = false;
 }
 
 static int keycode_state_changed_listener(const zmk_event_t *eh) {
@@ -570,8 +601,7 @@ static void rebuild_lookup(void) {
 		release_combo_behavior(&active_combos[i], k_uptime_get());
 		deactivate_combo(i);
 	}
-	k_work_cancel_delayable(&timeout_task);
-	timeout_task_timeout_at = 0;
+	stop_timeout_task();
 	candidates = 0;
 	fully_pressed_combo = -1;
 
