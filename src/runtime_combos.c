@@ -38,7 +38,10 @@ BUILD_ASSERT(sizeof(SETTINGS_KEY "/c99") <= SETTINGS_NAME_BUF_LEN,
 
 struct runtime_combo_config zmk_runtime_combos_slots[CONFIG_ZMK_RUNTIME_COMBOS_MAX_COUNT];
 
-static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg) {
+/* Not named settings_set/settings_commit: Zephyr declares a public
+ * settings_commit(), and a static definition of the same name does not build. */
+static int runtime_combos_settings_set(const char *name, size_t len, settings_read_cb read_cb,
+				       void *cb_arg) {
 	int index;
 	if (sscanf(name, "c%d", &index) != 1) {
 		return -ENOENT;
@@ -62,12 +65,13 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
 
 /* Called once after every stored slot has been read back, so the engine builds
  * its lookup from a complete table rather than once per slot. */
-static int settings_commit(void) {
+static int runtime_combos_settings_commit(void) {
 	zmk_runtime_combos_engine_refresh();
 	return 0;
 }
 
-SETTINGS_STATIC_HANDLER_DEFINE(runtime_combos, SETTINGS_KEY, NULL, settings_set, settings_commit,
+SETTINGS_STATIC_HANDLER_DEFINE(runtime_combos, SETTINGS_KEY, NULL, runtime_combos_settings_set,
+			       runtime_combos_settings_commit,
 			       NULL);
 
 static int find_slot_by_id(uint32_t combo_id) {
