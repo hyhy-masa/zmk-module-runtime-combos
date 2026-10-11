@@ -12,6 +12,7 @@
 
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
+#include <errno.h>
 #include <string.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
@@ -87,6 +88,17 @@ static int handle_set_combo(const cormoran_combos_SetComboRequest *req,
 	const cormoran_combos_ComboConfig *cfg = &req->combo;
 	LOG_DBG("Set combo: id=%d keys=%d timeout=%d", cfg->combo_id, cfg->key_positions_count,
 		cfg->timeout_ms);
+
+	/* The slot stores a 16-bit local id; a larger value would be truncated
+	 * into some other behavior's id and pass the existence check. */
+	if (cfg->has_binding && cfg->binding.behavior_id > UINT16_MAX) {
+		LOG_ERR("Combo id=%u names behavior id %u, out of range", cfg->combo_id,
+			cfg->binding.behavior_id);
+		cormoran_combos_SetComboResponse result = cormoran_combos_SetComboResponse_init_zero;
+		resp->which_response_type = cormoran_combos_Response_set_combo_tag;
+		resp->response_type.set_combo = result;
+		return -EINVAL;
+	}
 
 	struct runtime_combo_config combo = {
 		.combo_id = cfg->combo_id,

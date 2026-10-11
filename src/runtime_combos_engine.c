@@ -61,6 +61,14 @@ BUILD_ASSERT(CONFIG_ZMK_RUNTIME_COMBOS_MAX_COUNT <= 32,
 struct active_combo {
 	int8_t slot;
 	struct zmk_behavior_binding binding;
+	/* Copied from the slot when the combo fires. The slot may be rewritten or
+	 * deleted while the keys are still held; the held combo keeps finishing
+	 * with the settings it fired with. */
+	uint8_t key_count;
+	bool slow_release;
+	/* True between pressing and releasing the behavior, so it is released
+	 * exactly once. */
+	bool behavior_pressed;
 	/* Filled with the combo's keys on press; entries are removed as they are
 	 * released. Empty means every key is up. */
 	uint8_t key_positions_pressed_count;
@@ -99,7 +107,7 @@ static int64_t last_combo_timestamp = INT32_MIN;
 static atomic_t refresh_pending = ATOMIC_INIT(1);
 
 static int cleanup(void);
-static void apply_pending_refresh(void);
+static bool apply_pending_refresh(void);
 static void deactivate_combo(int active_combo_index);
 
 /* ------------------------------------------------------------------ */
@@ -362,6 +370,19 @@ static struct active_combo *store_active_combo(int slot) {
 		LOG_ERR("Unable to store combo; already %d active", active_combo_count);
 		return NULL;
 	}
+	/*
+	 * The behavior event position comes from the slot, and behaviors such as
+	 * hold-tap find their state by position. A slot rewritten while its old
+	 * combo is still held could fire again under the same position, and one
+	 * release would then end the other's hold. Refuse; the captured presses are
+	 * handed back (the first as a plain key, the rest re-evaluated).
+	 */
+	for (int i = 0; i < active_combo_count; i++) {
+		if (active_combos[i].slot == slot) {
+			LOG_WRN("Combo slot %d is still held from before it was rewritten", slot);
+			return NULL;
+		}
+	}
 
 	struct active_combo *active = &active_combos[active_combo_count++];
 	*active = (struct active_combo){0};
@@ -383,8 +404,9 @@ static void move_pressed_keys_to_active_combo(struct active_combo *active, uint8
 	pressed_keys_count -= combo_length;
 }
 
-/* Returns how many captured presses were re-raised because the combo could
- * not fire, so the caller can order the triggering release after them. */
+/* Returns how many captured presses were handed back because the combo could
+ * not fire (the first released to the keymap, the rest re-raised), so the
+ * caller can order the triggering release after them. */
 static int activate_combo(int slot) {
 	const struct runtime_combo_config *cfg = slot_cfg(slot);
 
@@ -399,15 +421,19 @@ static int activate_combo(int slot) {
 	}
 
 	active->binding = binding;
+	active->key_count = cfg->key_count;
+	active->slow_release = cfg->slow_release;
 
-	uint8_t combo_length = MIN(pressed_keys_count, cfg->key_count);
-	if (combo_length == 0) {
-		/* No path reaches this today, but firing a behavior we could never
-		 * release would leave it held forever, so refuse rather than trust. */
+	/* A combo fired with fewer captured keys than it has would never see
+	 * all its keys pressed again, so a non-slow-release behavior would never
+	 * be released. Refuse rather than fire it short. */
+	if (pressed_keys_count < cfg->key_count) {
 		deactivate_combo(active_combo_count - 1);
-		return 0;
+		return release_pressed_keys();
 	}
+	uint8_t combo_length = cfg->key_count;
 	move_pressed_keys_to_active_combo(active, combo_length);
+	active->behavior_pressed = true;
 	press_combo_behavior(active, active->key_positions_pressed[0].data.timestamp);
 	return 0;
 }
@@ -424,10 +450,9 @@ static void deactivate_combo(int active_combo_index) {
 static bool release_combo_key(uint32_t position, int64_t timestamp) {
 	for (int i = 0; i < active_combo_count; i++) {
 		struct active_combo *active = &active_combos[i];
-		const struct runtime_combo_config *cfg = slot_cfg(active->slot);
 
 		bool key_released = false;
-		bool all_keys_pressed = active->key_positions_pressed_count == cfg->key_count;
+		bool all_keys_pressed = active->key_positions_pressed_count == active->key_count;
 		bool all_keys_released = true;
 
 		for (uint8_t j = 0; j < active->key_positions_pressed_count; j++) {
@@ -446,8 +471,10 @@ static bool release_combo_key(uint32_t position, int64_t timestamp) {
 		}
 
 		active->key_positions_pressed_count--;
-		if ((cfg->slow_release && all_keys_released) ||
-		    (!cfg->slow_release && all_keys_pressed)) {
+		if (active->behavior_pressed &&
+		    ((active->slow_release && all_keys_released) ||
+		     (!active->slow_release && all_keys_pressed))) {
+			active->behavior_pressed = false;
 			release_combo_behavior(active, timestamp);
 		}
 		if (all_keys_released) {
@@ -462,13 +489,18 @@ static bool release_combo_key(uint32_t position, int64_t timestamp) {
 static int cleanup(void) {
 	stop_timeout_task();
 	candidates = 0;
-	int released = 0;
 	if (fully_pressed_combo >= 0) {
 		int slot = fully_pressed_combo;
 		fully_pressed_combo = -1;
-		released = activate_combo(slot);
+		int released = activate_combo(slot);
+		if (released > 0) {
+			/* Refused: the presses were handed back, and the re-raised ones
+			 * may already have been captured and evaluated again. That new
+			 * state is not ours to flush. */
+			return released;
+		}
 	}
-	return released + release_pressed_keys();
+	return release_pressed_keys();
 }
 
 /* ------------------------------------------------------------------ */
@@ -542,7 +574,17 @@ static void combo_timeout_handler(struct k_work *item) {
 		return;
 	}
 	in_timeout_handler = true;
-	if (filter_timed_out_candidates(timeout_task_timeout_at) == 0) {
+	/*
+	 * The candidates were chosen from the table as it was before any change
+	 * the RPC thread made since. Firing one now would read the rewritten slot
+	 * and output a combo whose keys were never pressed. Rebuilding hands the
+	 * captured presses back: the first goes on to the keymap as a plain key,
+	 * the rest are re-raised and re-evaluated against the new table (and get
+	 * a deadline only if a candidate captures them again), so there is
+	 * nothing left to time out here.
+	 */
+	if (!apply_pending_refresh() &&
+	    filter_timed_out_candidates(timeout_task_timeout_at) == 0) {
 		cleanup();
 	}
 	update_timeout_task();
@@ -595,12 +637,14 @@ ZMK_SUBSCRIPTION(runtime_combos, zmk_keycode_state_changed);
 /* ------------------------------------------------------------------ */
 
 static void rebuild_lookup(void) {
-	/* A slot being rewritten under a held combo would leave us releasing a
-	 * behavior we no longer have the config for, so drop everything first. */
-	for (int i = active_combo_count - 1; i >= 0; i--) {
-		release_combo_behavior(&active_combos[i], k_uptime_get());
-		deactivate_combo(i);
-	}
+	/*
+	 * Combos already held are left alone: they carry their own binding, key
+	 * count and slow_release, keep absorbing their keys' releases, and release
+	 * their behavior once. Releasing them here would send a release for a
+	 * behavior already released, and let the remaining key releases reach the
+	 * keymap without a matching press -- both can drop a modifier another key
+	 * still holds.
+	 */
 	stop_timeout_task();
 	candidates = 0;
 	fully_pressed_combo = -1;
@@ -635,10 +679,13 @@ static void rebuild_lookup(void) {
 
 void zmk_runtime_combos_engine_refresh(void) { atomic_set(&refresh_pending, 1); }
 
-static void apply_pending_refresh(void) {
+/* Returns true when the lookup was rebuilt. */
+static bool apply_pending_refresh(void) {
 	if (atomic_cas(&refresh_pending, 1, 0)) {
 		rebuild_lookup();
+		return true;
 	}
+	return false;
 }
 
 static int runtime_combos_engine_init(void) {
